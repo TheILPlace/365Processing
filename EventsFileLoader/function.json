@@ -1,0 +1,17 @@
+{
+  "bindings": [
+    {
+      "name": "name",
+      "type": "activityTrigger",
+      "direction": "in"
+    },
+    {
+      "name": "inputFile",
+      "type": "blob",
+      "direction": "in",
+      "path": "{data.containerName}/{data.blobName}",
+      "connection": "AzureWebJobsStorage"
+  }
+  ],
+  "scriptFile": "../dist/EventsFileLoader/index.js"
+}
