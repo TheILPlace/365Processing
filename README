@@ -2,3 +2,7 @@
 container: incoming
 add event: eventgrid to storage. with filter: subject begins with   /blobServices/default/containers/incoming/
 pointed to Azure Function: EventsProcessingEventGridStarter
+
+
+
+The Event.Start property for an all-day event needs to be set to midnight

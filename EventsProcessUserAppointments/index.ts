@@ -20,10 +20,20 @@ const activityFunction: AzureFunction = async function (context: Context, input:
     client = await getGraphClientByToken(input.accessToken);
 
     try {
-        // const user = await client
-        //     .api(`/users/${input.appointmentUser.MailAddress}`)
-        //     .select('id')
-        //     .get();
+
+        //check if the user exists
+        try {
+            const user = await client
+                .api(`/users/${input.appointmentUser.MailAddress}`)
+                .select('id')
+                .get();
+            
+        } catch (error) {
+            context.log('ERROR processing user: ', input.appointmentUser.MailAddress, error);
+            return false;
+
+        }
+
 
         const userId = input.appointmentUser.MailAddress; //user.id;
 
@@ -63,9 +73,14 @@ const createAllEvents = async (udn: string, appointments: Array<Appointment>, co
 
 
 
-        return await client
+        return client
             .api(`/users/${udn}/calendar/events`)
-            .post(graphAppointment);
+            .post(graphAppointment)
+            .then(response => response)
+            .catch(error => {
+                context.log('error creating event ', udn, graphAppointment, error);
+                return null;
+            });
     });
 
     await Promise.all(createPromises);
@@ -77,19 +92,34 @@ const createAllEvents = async (udn: string, appointments: Array<Appointment>, co
 
 const createEventFromAppointmentObject = (udn: string, id: string, app: Appointment): GraphAppointment => {
     const data = app.Appointment;
+
+    if (data.IsAllDayEvent) {
+        data.Start = data.Start.split("T")[0] +"T00:00:00";
+
+        //calculate end date
+        const dateObject = new Date(data.End.split("T")[0]);
+        
+        // Adding one day
+        dateObject.setDate(dateObject.getDate() + 1);
+        
+        data.End = dateObject.toISOString().slice(0, 10) +"T00:00:00";
+
+    }
+
+
     const graphAppointment: GraphAppointment = {
         body: {content: 'meeting', contentType: 'text'},
         categories: [],
-        importance: 'normal',
+        importance: data.Importance.toLocaleLowerCase(),
         isOrganizer: data.IsOrganizer,
         organizer: { emailAddress: {address:data.IsOrganizer ? udn : "someoneelse@outlook.com", name: 'Name' }},
         // originalStart: string,
         // originalStartTimeZone: string,
-        sensitivity: 'normal',
-        start: { dateTime: data.Start, timeZone: 'UTC' },
-        end: { dateTime: data.End, timeZone: 'UTC' },
+        sensitivity: data.Sensitivity.toLocaleLowerCase(),
+        start: { dateTime: data.Start.split('+')[0], timeZone: 'Israel Standard Time' },
+        end: { dateTime: data.End.split('+')[0], timeZone: 'Israel Standard Time' },
         subject: "Meeting +" + data.NumberOfParticipants + (data.AppointmentType == 'Occurrence' ? ' R' : ''),
-        type: data.AppointmentType == 'Occurrence' ? 'occurrence' : ' singleInstance',
+        type: data.AppointmentType == 'Occurrence' ? 'occurrence' : 'singleInstance',
         isAllDay: data.IsAllDayEvent,
         transactionId: id
     }
@@ -126,7 +156,7 @@ const deleteAllEvents = async (udn: string, context: any) => {
     //now delete all items
 
     const deletePromises = allResults.map(async (event) => {
-        return await client.api(`/users/${udn}/events/${event.id}`)
+        return  client.api(`/users/${udn}/events/${event.id}`)
             .delete();
         //console.log(`Deleted event with ID: ${event.id}`);
     });
