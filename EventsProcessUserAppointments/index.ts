@@ -1,7 +1,7 @@
 ﻿
 import { AzureFunction, Context } from "@azure/functions"
 import { EventsProcessUserAppointmentsInput } from "../Interfaces/events-process-user-appointments-input";
-import { Client, PageCollection } from "@microsoft/microsoft-graph-client";
+import { BatchRequestContent, BatchRequestStep, Client, PageCollection } from "@microsoft/microsoft-graph-client";
 import { getGraphClientByToken } from "../utils/graph-utils";
 import { TelemetryClient } from 'applicationinsights';
 import { Appointment } from "../Interfaces/appointment";
@@ -27,7 +27,7 @@ const activityFunction: AzureFunction = async function (context: Context, input:
                 .api(`/users/${input.appointmentUser.MailAddress}`)
                 .select('id')
                 .get();
-            
+
         } catch (error) {
             context.log('ERROR processing user: ', input.appointmentUser.MailAddress, error);
             return false;
@@ -61,58 +61,106 @@ const activityFunction: AzureFunction = async function (context: Context, input:
 
 };
 
+// const createAllEvents2 = async (udn: string, appointments: Array<Appointment>, context: any) => {
+
+//     context.log('about to create all events for user ', udn);
+//     context.log(`retrieved ${appointments.length} events for user ${udn} `);
+
+
+//     const createPromises = appointments.map(async (app) => {
+
+//         const graphAppointment = createEventFromAppointmentObject(udn, app.ItemId, app);
+
+
+
+//         return client
+//             .api(`/users/${udn}/calendar/events`)
+//             .post(graphAppointment)
+//             .then(response => response)
+//             .catch(error => {
+//                 context.log('error creating event ', udn, graphAppointment, error);
+//                 return null;
+//             });
+//     });
+
+//     await Promise.all(createPromises);
+
+//     context.log('created all events for user ', udn);
+
+// }
+
 const createAllEvents = async (udn: string, appointments: Array<Appointment>, context: any) => {
 
     context.log('about to create all events for user ', udn);
     context.log(`retrieved ${appointments.length} events for user ${udn} `);
 
+    let eventChunks: Array<Array<any>> = [];
+    const batchSize = 20;
 
-    const createPromises = appointments.map(async (app) => {
+    for (let i = 0; i < appointments.length; i += batchSize) {
+        const chunk = appointments.slice(i, i + batchSize);
+        eventChunks.push(chunk);
+    }
 
-        const graphAppointment = createEventFromAppointmentObject(udn, app.ItemId, app);
 
 
+    for (let index = 0; index < eventChunks.length; index++) {
+        const chunk = eventChunks[index];
 
-        return client
-            .api(`/users/${udn}/calendar/events`)
-            .post(graphAppointment)
-            .then(response => response)
-            .catch(error => {
-                context.log('error creating event ', udn, graphAppointment, error);
-                return null;
-            });
-    });
 
-    await Promise.all(createPromises);
+        const batchRequestSteps = chunk.map((app, index2) => {
+            const graphAppointment = createEventFromAppointmentObject(udn, app.ItemId, app);
+
+            const request = {
+                id: index2.toString(),
+                method: 'POST',
+                url: `/users/${udn}/calendar/events`,
+                body: graphAppointment,
+                headers: {
+                    "Content-Type": "application/json"
+                  }
+
+            };
+            return request;
+        });
+
+        //deletePromises.push(client.api('$batch').post({ requests: batchRequestSteps }))
+        const res = await client.api('$batch').post({ requests: batchRequestSteps })
+        console.log('create-finished batch ', index);
+
+    }
+
+
 
     context.log('created all events for user ', udn);
 
 }
 
 
+
 const createEventFromAppointmentObject = (udn: string, id: string, app: Appointment): GraphAppointment => {
     const data = app.Appointment;
 
     if (data.IsAllDayEvent) {
-        data.Start = data.Start.split("T")[0] +"T00:00:00";
+        data.Start = data.Start.split("T")[0] + "T00:00:00";
 
         //calculate end date
         const dateObject = new Date(data.End.split("T")[0]);
-        
+
         // Adding one day
         dateObject.setDate(dateObject.getDate() + 1);
-        
-        data.End = dateObject.toISOString().slice(0, 10) +"T00:00:00";
+
+        data.End = dateObject.toISOString().slice(0, 10) + "T00:00:00";
 
     }
 
 
     const graphAppointment: GraphAppointment = {
-        body: {content: 'meeting', contentType: 'text'},
+        body: { content: 'meeting', contentType: 'text' },
         categories: [],
         importance: data.Importance.toLocaleLowerCase(),
         isOrganizer: data.IsOrganizer,
-        organizer: { emailAddress: {address:data.IsOrganizer ? udn : "someoneelse@outlook.com", name: 'Name' }},
+        organizer: { emailAddress: { address: data.IsOrganizer ? udn : "someoneelse@outlook.com", name: 'Name' } },
         // originalStart: string,
         // originalStartTimeZone: string,
         sensitivity: data.Sensitivity.toLocaleLowerCase(),
@@ -155,13 +203,56 @@ const deleteAllEvents = async (udn: string, context: any) => {
 
     //now delete all items
 
-    const deletePromises = allResults.map(async (event) => {
-        return  client.api(`/users/${udn}/events/${event.id}`)
-            .delete();
-        //console.log(`Deleted event with ID: ${event.id}`);
-    });
 
-    await Promise.all(deletePromises);
+    //split into chunks of 20 (for batch processing)
+
+
+    let eventChunks: Array<Array<any>> = [];
+    const batchSize = 20;
+
+    for (let i = 0; i < allResults.length; i += batchSize) {
+        const chunk = allResults.slice(i, i + batchSize);
+        eventChunks.push(chunk);
+    }
+
+    let deletePromises = [];
+    //eventChunks.forEach(chunk => {
+    for (let index = 0; index < eventChunks.length; index++) {
+        const chunk = eventChunks[index];
+
+
+        const batchRequestSteps = chunk.map((event, index2) => {
+            const request = {
+                id: index2.toString(),
+                method: 'DELETE',
+                url: `/users/${udn}/events/${event.id}`
+
+            };
+            return request;
+        });
+
+        //deletePromises.push(client.api('$batch').post({ requests: batchRequestSteps }))
+        const res = await client.api('$batch').post({ requests: batchRequestSteps })
+        console.log('finixhed batch ', index);
+
+    }
+
+
+
+
+    // const deletePromises = allResults.map(async (event) => {
+    //     return  client.api(`/users/${udn}/events/${event.id}`)
+    //         .delete();
+    //     //console.log(`Deleted event with ID: ${event.id}`);
+    // });
+
+    //const res = await Promise.all(deletePromises);
+    // for (let index = 0; index < deletePromises.length; index++) {
+    //     const res = await deletePromises[index];
+    //     console.log('finixhed batch ', index);
+
+    // }
+
     context.log('deleted all events for user ', udn);
 
 }

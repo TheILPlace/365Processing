@@ -3,8 +3,8 @@
 import * as df from "durable-functions"
 import { AppointmentsFile } from "../Interfaces/appointments-file";
 import { AppointmentUser } from "../Interfaces/appointment-user";
-import { EventsProcessUserAppointmentsInput } from "../Interfaces/events-process-user-appointments-input";
 import { EventsFileOrchestratorInput } from "../Interfaces/events-file-orchestrator-input";
+import { EventsProcessUserAppointmentsInput } from "../Interfaces/events-process-user-appointments-input";
 
 const orchestrator = df.orchestrator(function* (context) {
 
