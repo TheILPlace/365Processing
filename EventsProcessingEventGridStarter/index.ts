@@ -2,11 +2,18 @@
 import { AzureFunction, Context, HttpRequest } from "@azure/functions"
 import { EventGridEvent } from "@azure/eventgrid";
 import { EventsFileOrchestratorInput } from "../Interfaces/events-file-orchestrator-input";
+import { TelemetryClient } from "applicationinsights";
+
+
+const telemetryClient = new TelemetryClient(process.env["APPLICATIONINSIGHTS_CONNECTION_STRING"])
 
 const httpStart: AzureFunction = async function (context: Context, eventGridEvent: EventGridEvent<any> ): Promise<any> {
 
 
     const eventSubject = eventGridEvent.subject;
+
+
+    telemetryClient.trackEvent({ name: "EventsProcessingEventGridStarter", properties: { status: "started", subject: eventSubject} });
 
 
 
@@ -24,6 +31,7 @@ const httpStart: AzureFunction = async function (context: Context, eventGridEven
     const blobName = parts[6];
 
 
+    telemetryClient.trackEvent({ name: "EventsProcessingEventGridStarter", properties: { status: "started", containerName, blobName} });
 
 
 

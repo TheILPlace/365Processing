@@ -13,6 +13,10 @@ const telemetryClient = new TelemetryClient(process.env["APPLICATIONINSIGHTS_CON
 
 
 const activityFunction: AzureFunction = async function (context: Context, input: EventsProcessUserAppointmentsInput): Promise<boolean> {
+    
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "starting", user: input.appointmentUser.MailAddress, runId: input.runId } })
+
+    
     context.log('processing user: ', input.appointmentUser.MailAddress);
 
 
@@ -39,13 +43,12 @@ const activityFunction: AzureFunction = async function (context: Context, input:
 
 
         //delete all the user's events for the current week
-
-        await deleteAllEvents(input.appointmentUser.MailAddress, context);
+        await deleteAllEvents(input.appointmentUser.MailAddress, context, input.runId);
 
 
         //create new user events
 
-        await createAllEvents(input.appointmentUser.MailAddress, input.appointmentUser.Appointments, context);
+        await createAllEvents(input.appointmentUser.MailAddress, input.appointmentUser.Appointments, context, input.runId);
 
         return true;
 
@@ -89,7 +92,10 @@ const activityFunction: AzureFunction = async function (context: Context, input:
 
 // }
 
-const createAllEvents = async (udn: string, appointments: Array<Appointment>, context: any) => {
+const createAllEvents = async (udn: string, appointments: Array<Appointment>, context: any, runId: string) => {
+
+
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "create events start", runId,user: udn, itemsCount: appointments.length} });
 
     context.log('about to create all events for user ', udn);
     context.log(`retrieved ${appointments.length} events for user ${udn} `);
@@ -133,12 +139,14 @@ const createAllEvents = async (udn: string, appointments: Array<Appointment>, co
 
 
     context.log('created all events for user ', udn);
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "create events end", user: udn, itemsCount: appointments.length} });
 
 }
 
 
 
 const createEventFromAppointmentObject = (udn: string, id: string, app: Appointment): GraphAppointment => {
+    
     const data = app.Appointment;
 
     if (data.IsAllDayEvent) {
@@ -177,9 +185,12 @@ const createEventFromAppointmentObject = (udn: string, id: string, app: Appointm
 
 
 
-const deleteAllEvents = async (udn: string, context: any) => {
+const deleteAllEvents = async (udn: string, context: any, runId: string) => {
 
     context.log('about to delete all events for user ', udn);
+
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events start", runId, user: udn} })
+
     let allResults = [];
     let existingEvents;
 
@@ -203,6 +214,7 @@ const deleteAllEvents = async (udn: string, context: any) => {
 
     //now delete all items
 
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events stat", runId, user: udn, itemsCount: allResults.length} })
 
     //split into chunks of 20 (for batch processing)
 
@@ -215,7 +227,7 @@ const deleteAllEvents = async (udn: string, context: any) => {
         eventChunks.push(chunk);
     }
 
-    let deletePromises = [];
+    //let deletePromises = [];
     //eventChunks.forEach(chunk => {
     for (let index = 0; index < eventChunks.length; index++) {
         const chunk = eventChunks[index];
@@ -254,6 +266,8 @@ const deleteAllEvents = async (udn: string, context: any) => {
     // }
 
     context.log('deleted all events for user ', udn);
+
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events end", runId, user: udn, itemsCount: allResults.length} })
 
 }
 

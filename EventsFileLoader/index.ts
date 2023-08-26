@@ -1,7 +1,7 @@
 ﻿
 import { AzureFunction, Context } from "@azure/functions"
 import { TelemetryClient } from 'applicationinsights';
-import { BlobServiceClient } from "@azure/storage-blob";
+// import { BlobServiceClient } from "@azure/storage-blob";
 import { AppointmentsFile } from "../Interfaces/appointments-file";
 import { EventsFileOrchestratorInput } from "../Interfaces/events-file-orchestrator-input";
 
