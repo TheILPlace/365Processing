@@ -13,17 +13,19 @@ const telemetryClient = new TelemetryClient(process.env["APPLICATIONINSIGHTS_CON
 
 
 const activityFunction: AzureFunction = async function (context: Context, input: EventsProcessUserAppointmentsInput): Promise<boolean> {
-    
+
     telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "starting", user: input.appointmentUser.MailAddress, runId: input.runId } })
 
-    
+
+
+
     context.log('processing user: ', input.appointmentUser.MailAddress);
 
 
-    // get userID from graph
-    client = await getGraphClientByToken(input.accessToken);
 
     try {
+        // create graph api client
+        client = await getGraphClientByToken(input.accessToken);
 
         //check if the user exists
         try {
@@ -34,6 +36,8 @@ const activityFunction: AzureFunction = async function (context: Context, input:
 
         } catch (error) {
             context.log('ERROR processing user: ', input.appointmentUser.MailAddress, error);
+            telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "exception", remarks: "mailbox doesnt exist", error, user: input.appointmentUser.MailAddress, runId: input.runId } })
+            telemetryClient.trackException({ exception: error });
             return false;
 
         }
@@ -43,8 +47,14 @@ const activityFunction: AzureFunction = async function (context: Context, input:
 
 
         //delete all the user's events for the current week
-        await deleteAllEvents(input.appointmentUser.MailAddress, context, input.runId);
+        const deleteResult = await deleteAllEvents(input.appointmentUser.MailAddress, context, input.runId);
 
+        if (deleteResult == false) {
+            //deletion failed. exit.
+            telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "exit", remarks: "Delete faile. exiting activity", user: input.appointmentUser.MailAddress, runId: input.runId } })
+
+            return false;
+        }
 
         //create new user events
 
@@ -56,12 +66,9 @@ const activityFunction: AzureFunction = async function (context: Context, input:
     } catch (error) {
         context.log('failed processing user: ', input.appointmentUser.MailAddress);
         context.log('error: ', error);
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "exception", remarks: "error processing user", error, user: input.appointmentUser.MailAddress, runId: input.runId } });
+        telemetryClient.trackException({ exception: error });
     }
-
-
-
-
-
 };
 
 // const createAllEvents2 = async (udn: string, appointments: Array<Appointment>, context: any) => {
@@ -92,183 +99,224 @@ const activityFunction: AzureFunction = async function (context: Context, input:
 
 // }
 
-const createAllEvents = async (udn: string, appointments: Array<Appointment>, context: any, runId: string) => {
+const createAllEvents = async (udn: string, appointments: Array<Appointment>, context: any, runId: string): Promise<boolean> => {
+
+    try {
+
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "create events start", runId, user: udn, itemsCount: appointments.length } });
+
+        context.log('about to create all events for user ', udn);
+        context.log(`retrieved ${appointments.length} events for user ${udn} `);
+
+        let eventChunks: Array<Array<any>> = [];
+        const batchSize = 20;
+
+        for (let i = 0; i < appointments.length; i += batchSize) {
+            const chunk = appointments.slice(i, i + batchSize);
+            eventChunks.push(chunk);
+        }
 
 
-    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "create events start", runId,user: udn, itemsCount: appointments.length} });
 
-    context.log('about to create all events for user ', udn);
-    context.log(`retrieved ${appointments.length} events for user ${udn} `);
+        for (let index = 0; index < eventChunks.length; index++) {
+            const chunk = eventChunks[index];
 
-    let eventChunks: Array<Array<any>> = [];
-    const batchSize = 20;
 
-    for (let i = 0; i < appointments.length; i += batchSize) {
-        const chunk = appointments.slice(i, i + batchSize);
-        eventChunks.push(chunk);
+            let batchRequestSteps = chunk.map((app, index2) => {
+                const graphAppointment = createEventFromAppointmentObject(udn, app.ItemId, app, runId);
+
+
+
+                const request = {
+                    id: index2.toString(),
+                    method: 'POST',
+                    url: `/users/${udn}/calendar/events`,
+                    body: graphAppointment,
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+
+                };
+                return request;
+            });
+
+            // remove null body (that are caused due to exception createing the appointment object)
+            batchRequestSteps = batchRequestSteps.filter(r => r.body !== null);
+
+            //deletePromises.push(client.api('$batch').post({ requests: batchRequestSteps }))
+            const res = await client.api('$batch').post({ requests: batchRequestSteps })
+            console.log('create-finished batch ', index);
+
+        }
+
+
+
+        context.log('created all events for user ', udn);
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "create events end", user: udn, itemsCount: appointments.length } });
+
+        return true;
+
+    } catch (error) {
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments:createAllEvents", properties: { status: "exception", remarks: "error creating events", error, user: udn, runId } });
+        telemetryClient.trackException({ exception: error });
+        return false;
     }
-
-
-
-    for (let index = 0; index < eventChunks.length; index++) {
-        const chunk = eventChunks[index];
-
-
-        const batchRequestSteps = chunk.map((app, index2) => {
-            const graphAppointment = createEventFromAppointmentObject(udn, app.ItemId, app);
-
-            const request = {
-                id: index2.toString(),
-                method: 'POST',
-                url: `/users/${udn}/calendar/events`,
-                body: graphAppointment,
-                headers: {
-                    "Content-Type": "application/json"
-                  }
-
-            };
-            return request;
-        });
-
-        //deletePromises.push(client.api('$batch').post({ requests: batchRequestSteps }))
-        const res = await client.api('$batch').post({ requests: batchRequestSteps })
-        console.log('create-finished batch ', index);
-
-    }
-
-
-
-    context.log('created all events for user ', udn);
-    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "create events end", user: udn, itemsCount: appointments.length} });
 
 }
 
 
 
-const createEventFromAppointmentObject = (udn: string, id: string, app: Appointment): GraphAppointment => {
-    
-    const data = app.Appointment;
+const createEventFromAppointmentObject = (udn: string, id: string, app: Appointment, runId: string): GraphAppointment => {
 
-    if (data.IsAllDayEvent) {
-        data.Start = data.Start.split("T")[0] + "T00:00:00";
+    try {
 
-        //calculate end date
-        const dateObject = new Date(data.End.split("T")[0]);
 
-        // Adding one day
-        dateObject.setDate(dateObject.getDate() + 1);
+        const data = app.Appointment;
 
-        data.End = dateObject.toISOString().slice(0, 10) + "T00:00:00";
+        if (data.IsAllDayEvent) {
+            data.Start = data.Start.split("T")[0] + "T00:00:00";
+
+            //calculate end date
+            const dateObject = new Date(data.End.split("T")[0]);
+
+            // Adding one day
+            dateObject.setDate(dateObject.getDate() + 1);
+
+            data.End = dateObject.toISOString().slice(0, 10) + "T00:00:00";
+
+        }
+
+
+        const graphAppointment: GraphAppointment = {
+            body: { content: 'meeting', contentType: 'text' },
+            categories: [],
+            importance: data.Importance.toLocaleLowerCase(),
+            isOrganizer: data.IsOrganizer,
+            organizer: { emailAddress: { address: data.IsOrganizer ? udn : "someoneelse@outlook.com", name: 'Name' } },
+            // originalStart: string,
+            // originalStartTimeZone: string,
+            sensitivity: data.Sensitivity.toLocaleLowerCase(),
+            start: { dateTime: data.Start.split('+')[0], timeZone: 'Israel Standard Time' },
+            end: { dateTime: data.End.split('+')[0], timeZone: 'Israel Standard Time' },
+            subject: "Meeting +" + data.NumberOfParticipants + (data.AppointmentType == 'Occurrence' ? ' R' : ''),
+            type: data.AppointmentType == 'Occurrence' ? 'occurrence' : 'singleInstance',
+            isAllDay: data.IsAllDayEvent,
+            transactionId: id
+        }
+
+        return graphAppointment;
+
+
+    } catch (error) {
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments:createEventFromAppointmentObject", properties: { status: "exception", remarks: "error creating events", error, user: udn, id, runId } });
+
+        return null;
 
     }
-
-
-    const graphAppointment: GraphAppointment = {
-        body: { content: 'meeting', contentType: 'text' },
-        categories: [],
-        importance: data.Importance.toLocaleLowerCase(),
-        isOrganizer: data.IsOrganizer,
-        organizer: { emailAddress: { address: data.IsOrganizer ? udn : "someoneelse@outlook.com", name: 'Name' } },
-        // originalStart: string,
-        // originalStartTimeZone: string,
-        sensitivity: data.Sensitivity.toLocaleLowerCase(),
-        start: { dateTime: data.Start.split('+')[0], timeZone: 'Israel Standard Time' },
-        end: { dateTime: data.End.split('+')[0], timeZone: 'Israel Standard Time' },
-        subject: "Meeting +" + data.NumberOfParticipants + (data.AppointmentType == 'Occurrence' ? ' R' : ''),
-        type: data.AppointmentType == 'Occurrence' ? 'occurrence' : 'singleInstance',
-        isAllDay: data.IsAllDayEvent,
-        transactionId: id
-    }
-
-    return graphAppointment;
 }
 
 
 
-const deleteAllEvents = async (udn: string, context: any, runId: string) => {
+const deleteAllEvents = async (udn: string, context: any, runId: string): Promise<boolean> => {
 
     context.log('about to delete all events for user ', udn);
 
-    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events start", runId, user: udn} })
+    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events start", runId, user: udn } })
 
-    let allResults = [];
-    let existingEvents;
-
-    existingEvents = await client
-        .api(`/users/${udn}/events`)
-        .select('id')
-        .get();
+    try {
 
 
 
-    allResults = allResults.concat(existingEvents.value);
+        let allResults = [];
+        let existingEvents;
 
-    let nextPage = await getNextPage(existingEvents, udn, context);
-    while (nextPage) {
-        existingEvents = nextPage;
+        existingEvents = await client
+            .api(`/users/${udn}/events`)
+            .select('id')
+            .get();
+
+
+
         allResults = allResults.concat(existingEvents.value);
-        nextPage = await getNextPage(existingEvents, udn, context);
+
+        let nextPage = await getNextPage(existingEvents, udn, context);
+        while (nextPage) {
+            existingEvents = nextPage;
+            allResults = allResults.concat(existingEvents.value);
+            nextPage = await getNextPage(existingEvents, udn, context);
+        }
+
+        context.log(`retrieved ${allResults.length} events for user ${udn} `);
+
+        //now delete all items
+
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events stat", runId, user: udn, itemsCount: allResults.length } })
+
+        if (allResults.length == 0) {
+            //no records to delete. exit.
+            return true;
+        }
+
+        //split into chunks of 20 (for batch processing)
+
+
+        let eventChunks: Array<Array<any>> = [];
+        const batchSize = 20;
+
+        for (let i = 0; i < allResults.length; i += batchSize) {
+            const chunk = allResults.slice(i, i + batchSize);
+            eventChunks.push(chunk);
+        }
+
+        //let deletePromises = [];
+        //eventChunks.forEach(chunk => {
+        for (let index = 0; index < eventChunks.length; index++) {
+            const chunk = eventChunks[index];
+
+
+            const batchRequestSteps = chunk.map((event, index2) => {
+                const request = {
+                    id: index2.toString(),
+                    method: 'DELETE',
+                    url: `/users/${udn}/events/${event.id}`
+
+                };
+                return request;
+            });
+
+            //deletePromises.push(client.api('$batch').post({ requests: batchRequestSteps }))
+            const res = await client.api('$batch').post({ requests: batchRequestSteps })
+            console.log('finixhed batch ', index);
+
+        }
+
+
+
+
+        // const deletePromises = allResults.map(async (event) => {
+        //     return  client.api(`/users/${udn}/events/${event.id}`)
+        //         .delete();
+        //     //console.log(`Deleted event with ID: ${event.id}`);
+        // });
+
+        //const res = await Promise.all(deletePromises);
+        // for (let index = 0; index < deletePromises.length; index++) {
+        //     const res = await deletePromises[index];
+        //     console.log('finixhed batch ', index);
+
+        // }
+
+        context.log('deleted all events for user ', udn);
+
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events end", runId, user: udn, itemsCount: allResults.length } })
+
+        return true;
+
+    } catch (error) {
+        telemetryClient.trackEvent({ name: "EventsProcessUserAppointments:deleteAllEvents", properties: { status: "exception", remarks: "error creating events", error, user: udn, runId } });
+        telemetryClient.trackException({ exception: error });
+        return false;
     }
-
-    context.log(`retrieved ${allResults.length} events for user ${udn} `);
-
-    //now delete all items
-
-    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events stat", runId, user: udn, itemsCount: allResults.length} })
-
-    //split into chunks of 20 (for batch processing)
-
-
-    let eventChunks: Array<Array<any>> = [];
-    const batchSize = 20;
-
-    for (let i = 0; i < allResults.length; i += batchSize) {
-        const chunk = allResults.slice(i, i + batchSize);
-        eventChunks.push(chunk);
-    }
-
-    //let deletePromises = [];
-    //eventChunks.forEach(chunk => {
-    for (let index = 0; index < eventChunks.length; index++) {
-        const chunk = eventChunks[index];
-
-
-        const batchRequestSteps = chunk.map((event, index2) => {
-            const request = {
-                id: index2.toString(),
-                method: 'DELETE',
-                url: `/users/${udn}/events/${event.id}`
-
-            };
-            return request;
-        });
-
-        //deletePromises.push(client.api('$batch').post({ requests: batchRequestSteps }))
-        const res = await client.api('$batch').post({ requests: batchRequestSteps })
-        console.log('finixhed batch ', index);
-
-    }
-
-
-
-
-    // const deletePromises = allResults.map(async (event) => {
-    //     return  client.api(`/users/${udn}/events/${event.id}`)
-    //         .delete();
-    //     //console.log(`Deleted event with ID: ${event.id}`);
-    // });
-
-    //const res = await Promise.all(deletePromises);
-    // for (let index = 0; index < deletePromises.length; index++) {
-    //     const res = await deletePromises[index];
-    //     console.log('finixhed batch ', index);
-
-    // }
-
-    context.log('deleted all events for user ', udn);
-
-    telemetryClient.trackEvent({ name: "EventsProcessUserAppointments", properties: { status: "delete events end", runId, user: udn, itemsCount: allResults.length} })
-
 }
 
 const getNextPage = async (collection: PageCollection, udn: string, context: any) => {
